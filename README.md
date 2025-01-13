@@ -67,9 +67,7 @@ After training, you can visualize the performance of the model:
 - The predicted traffic counts are compared with the actual traffic counts in a graph.
 - Loss curves show how well the model learned the traffic patterns over time.
 
-## License
 
-This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
 
 ---
 
