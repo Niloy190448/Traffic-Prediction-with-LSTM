@@ -1,0 +1,127 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.metrics import mean_squared_error
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+
+# Load the dataset
+# Assume you have a CSV file with traffic data and additional features (e.g., weather, weekday)
+df = pd.read_csv("advanced_travel_demand.csv", parse_dates=["timestamp"], index_col="timestamp")
+
+# Inspect the dataset
+print(df.head())
+
+# Visualize the original traffic demand
+plt.figure(figsize=(12, 6))
+plt.plot(df.index, df['traffic_count'])
+plt.title("Traffic Demand Over Time")
+plt.xlabel("Date")
+plt.ylabel("Traffic Count")
+plt.show()
+
+# Feature engineering: Extract additional temporal features
+df['hour'] = df.index.hour
+df['day'] = df.index.dayofweek  # Monday = 0, Sunday = 6
+df['month'] = df.index.month
+
+# Create one-hot encoding for the day of the week
+encoder = OneHotEncoder(sparse=False)
+day_of_week = encoder.fit_transform(df[['day']])
+
+# Add the one-hot encoded columns to the dataframe
+columns = [f'day_{i}' for i in range(7)]
+day_df = pd.DataFrame(day_of_week, columns=columns, index=df.index)
+df = pd.concat([df, day_df], axis=1)
+
+# Handle missing data (fill with forward fill method)
+df.fillna(method='ffill', inplace=True)
+
+# Normalize features using MinMaxScaler
+scaler = MinMaxScaler(feature_range=(0, 1))
+
+# We need to scale the traffic count, temperature, rainfall, and other numeric columns
+numeric_features = ['traffic_count', 'temperature', 'rainfall']
+df[numeric_features] = scaler.fit_transform(df[numeric_features])
+
+# Prepare the data for LSTM (input X and output y)
+def create_sequences(data, seq_length=24):
+    X, y = [], []
+    for i in range(len(data) - seq_length):
+        X.append(data[i:i + seq_length])
+        y.append(data[i + seq_length])
+    return np.array(X), np.array(y)
+
+# Feature columns to be included for prediction
+feature_columns = ['traffic_count', 'temperature', 'rainfall', 'hour', 'month'] + columns
+
+# Create sequences with the past 24 hours of data (time series)
+X, y = create_sequences(df[feature_columns].values, seq_length=24)
+
+# Reshape X to be compatible with LSTM input shape: (samples, time_steps, features)
+X = X.reshape((X.shape[0], X.shape[1], X.shape[2]))
+
+# Split data into train and test sets (80% training, 20% testing)
+train_size = int(len(X) * 0.8)
+X_train, X_test = X[:train_size], X[train_size:]
+y_train, y_test = y[:train_size], y[train_size:]
+
+# Build the LSTM model
+model = Sequential()
+model.add(LSTM(units=64, return_sequences=False, input_shape=(X_train.shape[1], X_train.shape[2])))
+model.add(Dropout(0.2))  # Dropout to prevent overfitting
+model.add(Dense(units=32))  # Dense layer
+model.add(Dense(units=1))  # Output layer for traffic demand prediction
+
+# Compile the model
+model.compile(optimizer='adam', loss='mean_squared_error')
+
+# Add EarlyStopping to stop training when the model stops improving
+early_stopping = EarlyStopping(monitor='val_loss', patience=5)
+
+# Train the model
+history = model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test), callbacks=[early_stopping])
+
+# Make predictions
+y_pred = model.predict(X_test)
+
+# Rescale the predictions and actual values to their original scale
+y_pred_rescaled = scaler.inverse_transform(y_pred)
+y_test_rescaled = scaler.inverse_transform(y_test)
+
+# Plot the actual vs predicted traffic demand
+plt.figure(figsize=(12, 6))
+plt.plot(df.index[-len(y_test):], y_test_rescaled, label="Actual Traffic Demand")
+plt.plot(df.index[-len(y_test):], y_pred_rescaled, label="Predicted Traffic Demand", linestyle='--')
+plt.title("Traffic Demand Prediction with LSTM")
+plt.xlabel("Time")
+plt.ylabel("Traffic Count")
+plt.legend()
+plt.show()
+
+# Evaluate the model performance using Mean Squared Error
+mse = mean_squared_error(y_test_rescaled, y_pred_rescaled)
+print(f"Mean Squared Error: {mse:.4f}")
+
+# Plot the training history to visualize the loss
+plt.figure(figsize=(12, 6))
+plt.plot(history.history['loss'], label='Training Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.title("Model Training History")
+plt.xlabel("Epochs")
+plt.ylabel("Loss")
+plt.legend()
+plt.show()
+
+# Example: Predict traffic demand for a specific time period
+def predict_next_hour(model, last_data, scaler):
+    input_data = np.array(last_data).reshape(1, 24, len(feature_columns))
+    pred = model.predict(input_data)
+    return scaler.inverse_transform(pred)
+
+# Predict traffic demand for the next hour after the last observed data
+last_data = df[feature_columns].values[-24:]  # Last 24 hours of data
+next_hour_pred = predict_next_hour(model, last_data, scaler)
+print(f"Predicted traffic demand for next hour: {next_hour_pred[0][0]:.2f}")
